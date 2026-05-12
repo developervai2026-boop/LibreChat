@@ -1025,7 +1025,6 @@ export const tSharedLinkSchema = z.object({
   conversationId: z.string(),
   shareId: z.string(),
   messages: z.array(z.string()),
-  isPublic: z.boolean(),
   title: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),

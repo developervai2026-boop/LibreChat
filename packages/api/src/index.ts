@@ -51,6 +51,9 @@ export * from './tools';
 export * from './web';
 /* Cache */
 export * from './cache';
+/* Share */
+export * from './share/access';
+export * from './share/service';
 /* Stream */
 export * from './stream';
 /* Diagnostics */

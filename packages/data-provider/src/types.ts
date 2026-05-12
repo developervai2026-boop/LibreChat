@@ -316,7 +316,9 @@ export type TCreateShareLinkRequest = Pick<TConversation, 'conversationId'>;
 export type TUpdateShareLinkRequest = Pick<TSharedLink, 'shareId'>;
 
 export type TSharedLinkResponse = Pick<TSharedLink, 'shareId'> &
-  Pick<TConversation, 'conversationId'>;
+  Pick<TConversation, 'conversationId'> & {
+    _id?: string;
+  };
 
 export type TSharedLinkGetResponse = TSharedLinkResponse & {
   success: boolean;

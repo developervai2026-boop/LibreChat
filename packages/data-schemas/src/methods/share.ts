@@ -158,10 +158,17 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
   /**
    * Get shared messages for a public share link
    */
-  async function getSharedMessages(shareId: string): Promise<t.SharedMessagesResult | null> {
+  async function getSharedMessages(
+    shareId: string,
+    shareObjectId?: string,
+  ): Promise<t.SharedMessagesResult | null> {
     try {
       const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
-      const share = (await SharedLink.findOne({ shareId, isPublic: true })
+      const query = shareObjectId
+        ? SharedLink.findById(shareObjectId)
+        : SharedLink.findOne({ shareId });
+
+      const share = (await query
         .populate({
           path: 'messages',
           select: '-_id -__v -user',
@@ -169,7 +176,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
         .select('-_id -__v -user')
         .lean()) as (t.ISharedLink & { messages: t.IMessage[] }) | null;
 
-      if (!share?.conversationId || !share.isPublic) {
+      if (!share?.conversationId) {
         return null;
       }
 
@@ -183,7 +190,6 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
       const result: t.SharedMessagesResult = {
         shareId: share.shareId || shareId,
         title: share.title,
-        isPublic: share.isPublic,
         createdAt: share.createdAt,
         updatedAt: share.updatedAt,
         conversationId: newConvoId,
@@ -207,7 +213,6 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
     user: string,
     pageParam?: Date,
     pageSize: number = 10,
-    isPublic: boolean = true,
     sortBy: string = 'createdAt',
     sortDirection: string = 'desc',
     search?: string,
@@ -215,7 +220,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
     try {
       const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
       const Conversation = mongoose.models.Conversation as SchemaWithMeiliMethods;
-      const query: FilterQuery<t.ISharedLink> = { user, isPublic };
+      const query: FilterQuery<t.ISharedLink> = { user };
 
       if (pageParam) {
         if (sortDirection === 'desc') {
@@ -274,7 +279,6 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
         links: links.map((link) => ({
           shareId: link.shareId || '',
           title: link?.title || 'Untitled',
-          isPublic: link.isPublic,
           createdAt: link.createdAt || new Date(),
           conversationId: link.conversationId,
         })),
@@ -293,13 +297,18 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
   /**
    * Delete all shared links for a user
    */
-  async function deleteAllSharedLinks(user: string): Promise<t.DeleteAllSharesResult> {
+  async function deleteAllSharedLinks(
+    user: string,
+  ): Promise<t.DeleteAllSharesResult & { deletedIds: string[] }> {
     try {
       const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
+      const links = await SharedLink.find({ user }).select('_id').lean();
+      const ids = links.map((l) => l._id.toString());
       const result = await SharedLink.deleteMany({ user });
       return {
         message: 'All shared links deleted successfully',
         deletedCount: result.deletedCount,
+        deletedIds: ids,
       };
     } catch (error) {
       logger.error('[deleteAllSharedLinks] Error deleting shared links', {
@@ -316,17 +325,20 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
   async function deleteConvoSharedLink(
     user: string,
     conversationId: string,
-  ): Promise<t.DeleteAllSharesResult> {
+  ): Promise<t.DeleteAllSharesResult & { deletedIds: string[] }> {
     if (!user || !conversationId) {
       throw new ShareServiceError('Missing required parameters', 'INVALID_PARAMS');
     }
 
     try {
       const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
+      const links = await SharedLink.find({ user, conversationId }).select('_id').lean();
+      const ids = links.map((l) => l._id.toString());
       const result = await SharedLink.deleteMany({ user, conversationId });
       return {
         message: 'Shared links deleted successfully',
         deletedCount: result.deletedCount,
+        deletedIds: ids,
       };
     } catch (error) {
       logger.error('[deleteConvoSharedLink] Error deleting shared links', {
@@ -358,7 +370,6 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
         SharedLink.findOne({
           conversationId,
           user,
-          isPublic: true,
           ...(targetMessageId && { targetMessageId }),
         })
           .select('-_id -__v -user')
@@ -366,19 +377,13 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
         Message.find({ conversationId, user }).sort({ createdAt: 1 }).lean(),
       ]);
 
-      if (existingShare && existingShare.isPublic) {
+      if (existingShare) {
         logger.error('[createSharedLink] Share already exists', {
           user,
           conversationId,
           targetMessageId,
         });
         throw new ShareServiceError('Share already exists', 'SHARE_EXISTS');
-      } else if (existingShare) {
-        await SharedLink.deleteOne({
-          conversationId,
-          user,
-          ...(targetMessageId && { targetMessageId }),
-        });
       }
 
       const conversation = (await Conversation.findOne({ conversationId, user }).lean()) as {
@@ -401,7 +406,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
       const title = conversation.title || 'Untitled';
 
       const shareId = nanoid();
-      await SharedLink.create({
+      const created = await SharedLink.create({
         shareId,
         conversationId,
         messages: conversationMessages,
@@ -410,7 +415,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
         ...(targetMessageId && { targetMessageId }),
       });
 
-      return { shareId, conversationId };
+      return { _id: created._id.toString(), shareId, conversationId };
     } catch (error) {
       if (error instanceof ShareServiceError) {
         throw error;
@@ -438,15 +443,15 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
 
     try {
       const SharedLink = mongoose.models.SharedLink as Model<t.ISharedLink>;
-      const share = (await SharedLink.findOne({ conversationId, user, isPublic: true })
-        .select('shareId -_id')
-        .lean()) as { shareId?: string } | null;
+      const share = (await SharedLink.findOne({ conversationId, user })
+        .select('shareId _id')
+        .lean()) as { shareId?: string; _id?: import('mongoose').Types.ObjectId } | null;
 
       if (!share) {
         return { shareId: null, success: false };
       }
 
-      return { shareId: share.shareId || null, success: true };
+      return { _id: share._id?.toString(), shareId: share.shareId || null, success: true };
     } catch (error) {
       logger.error('[getSharedLink] Error getting shared link', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -499,7 +504,11 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
 
       anonymizeConvo(updatedShare);
 
-      return { shareId: newShareId, conversationId: updatedShare.conversationId };
+      return {
+        _id: updatedShare._id?.toString(),
+        shareId: newShareId,
+        conversationId: updatedShare.conversationId,
+      };
     } catch (error) {
       logger.error('[updateSharedLink] Error updating shared link', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -533,6 +542,7 @@ export function createShareMethods(mongoose: typeof import('mongoose')) {
       }
 
       return {
+        _id: result._id?.toString(),
         success: true,
         shareId,
         message: 'Share deleted successfully',

@@ -52,6 +52,7 @@ export const useGetSharedLinkQuery = (
       refetchOnMount: false,
       onSuccess: (data) => {
         queryClient.setQueryData([QueryKeys.sharedLinks, conversationId], {
+          _id: data._id,
           conversationId: data.conversationId,
           shareId: data.shareId,
         });

@@ -1,7 +1,12 @@
 const mongoose = require('mongoose');
 const { isEnabled } = require('@librechat/api');
+const {
+  ResourceType,
+  PrincipalType,
+  PrincipalModel,
+  AccessRoleIds,
+} = require('librechat-data-provider');
 const { getTransactionSupport, logger } = require('@librechat/data-schemas');
-const { ResourceType, PrincipalType, PrincipalModel } = require('librechat-data-provider');
 const {
   entraIdPrincipalFeatureEnabled,
   getUserOwnedEntraGroups,
@@ -717,6 +722,69 @@ const bulkUpdateResourcePermissions = async ({
     };
 
     const bulkWrites = [];
+
+    if (resourceType === ResourceType.SHARED_LINK) {
+      const ownerRole = rolesMap.get(AccessRoleIds.SHARED_LINK_OWNER);
+      if (!ownerRole) {
+        throw new Error('SHARED_LINK_OWNER role not found');
+      }
+      const ownerRoleIdStr = ownerRole._id.toString();
+      const AclEntry = mongoose.models.AclEntry;
+
+      const nonPublicUpdated = updatedPrincipals.filter((p) => p.type !== PrincipalType.PUBLIC);
+      const nonPublicRevoked = revokedPrincipals.filter((p) => p.type !== PrincipalType.PUBLIC);
+      const allToCheck = [...nonPublicUpdated, ...nonPublicRevoked];
+
+      if (allToCheck.length > 0) {
+        const orQueries = allToCheck.map((p) => ({
+          principalType: p.type,
+          principalId: p.type === PrincipalType.ROLE ? p.id : new mongoose.Types.ObjectId(p.id),
+        }));
+
+        const existingEntries = await AclEntry.find({
+          resourceType,
+          resourceId,
+          $or: orQueries,
+        }).lean();
+
+        const entryMap = new Map();
+        for (const entry of existingEntries) {
+          const key = `${entry.principalType}:${entry.principalId?.toString() ?? ''}`;
+          entryMap.set(key, entry);
+        }
+
+        for (const principal of nonPublicUpdated) {
+          const pid =
+            principal.type === PrincipalType.ROLE
+              ? principal.id
+              : new mongoose.Types.ObjectId(principal.id);
+          const key = `${principal.type}:${pid?.toString() ?? ''}`;
+          const existing = entryMap.get(key);
+          const isOwner = existing?.roleId && existing.roleId.toString() === ownerRoleIdStr;
+
+          if (isOwner && principal.accessRoleId !== AccessRoleIds.SHARED_LINK_OWNER) {
+            throw new Error('Cannot demote the owner of a shared link');
+          }
+          if (!isOwner && principal.accessRoleId === AccessRoleIds.SHARED_LINK_OWNER) {
+            throw new Error('Cannot assign owner role to non-owner principals for shared links');
+          }
+        }
+
+        for (const principal of nonPublicRevoked) {
+          const pid =
+            principal.type === PrincipalType.ROLE
+              ? principal.id
+              : new mongoose.Types.ObjectId(principal.id);
+          const key = `${principal.type}:${pid?.toString() ?? ''}`;
+          const existing = entryMap.get(key);
+          const isOwner = existing?.roleId && existing.roleId.toString() === ownerRoleIdStr;
+
+          if (isOwner) {
+            throw new Error('Cannot remove the owner of a shared link');
+          }
+        }
+      }
+    }
 
     for (const principal of updatedPrincipals) {
       try {
